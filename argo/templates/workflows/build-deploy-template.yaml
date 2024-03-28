@@ -1,0 +1,302 @@
+# Workflow templates define the structure of how workflows needs to trigger multiple steps within a DAG.
+# This workflow templates defines steps and dependencies for build and deploy steps in general.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-deploy-template
+spec:
+  serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+  entrypoint: build-deploy
+  onExit: exit-handler
+  synchronization:
+    mutex:
+      name: build-deploy-workflow # scope of this mutex is restricted to current namespace.
+  arguments:
+    parameters:
+      - name: git-commit-id
+      - name: user-ldap
+      - name: pre-approved-cmr
+        value: ""
+      - name: argo-workflow-url
+        value: {{ template "ethos-argo-workflows-resources.getArgoWorkflowUrl" . }}
+      - name: service-git-org
+        value: "{{ .Values.global.serviceGitOrg }}"
+      - name: service-git-repo
+        value: "{{ .Values.global.serviceGitRepo }}"
+      - name: service-git-repo-url
+        value: "https://git.corp.adobe.com/{{ lower .Values.global.serviceGitOrg }}/{{ lower .Values.global.serviceGitRepo }}.git"
+      - name: deploy-git-org
+        value: "{{ .Values.global.deployGitOrg }}"
+      - name: deploy-git-repo
+        value: "{{ .Values.global.deployGitRepo }}"
+      - name: container-registry
+        value: "{{ .Values.containerRegistry }}"
+      - name: container-registry-type
+        value: "docker"
+      - name: registry-image-path
+        value: "{{ lower .Values.global.serviceGitOrg }}/{{ lower .Values.global.serviceGitRepo }}/{{ lower .Values.global.serviceGitRepo }}-img"
+      - name: dockerfile-workingdir-path
+        value: {{ .Values.dockerfileWorkingdirPath | default "." }}
+      - name: image-push-secret-ref
+        value: {{ .Values.imagePushSecret | default "image-push-creds" }}
+      - name: enable-rollbacks
+        value: false
+      - name: image-arch-length
+        value: {{ if .Values.global.containerImageArchitectures }} {{ len .Values.global.containerImageArchitectures }} {{ else }} 1 {{ end }}
+      - name: imagepush-multiarch
+        value: "{{ if and .Values.global.containerImageArchitectures (gt (len .Values.global.containerImageArchitectures) 1) }}true{{ else }}false{{ end }}"
+  templates:
+    - name: exit-handler
+      dag:
+        tasks:
+          - name: "demote"
+            # Reverts promote commits if rollbacks are enabled
+            when: "{{`{{ workflow.status }}`}} != Succeeded && {{`{{ workflow.parameters.enable-rollbacks }}`}} == true"
+            templateRef:
+              name: ethos-demote-templates
+              template: revert-commit
+            arguments:
+              parameters:
+                - name: deploy-git-org
+                  value: "{{`{{workflow.parameters.deploy-git-org}}`}}"
+                - name: deploy-git-repo
+                  value: "{{`{{workflow.parameters.deploy-git-repo}}`}}"
+          - name: mark-deploy-status
+            # Posts success/failure result to commit status.
+            templateRef:
+              name: ethos-github-commit-status
+              template: post-success-failure
+            arguments:
+              parameters:
+                - name: git-org
+                  value: "{{ `{{ workflow.parameters.service-git-org}}` }}"
+                - name: git-repo
+                  value: "{{ `{{ workflow.parameters.service-git-repo }}` }}"
+                - name: git-commit-id
+                  value: "{{`{{ workflow.parameters.git-commit-id}}`}}"
+                - name: status-context
+                  value: "ethos/flex/deploy-result"
+                - name: argo-workflow-url
+                  value: "{{ `{{ workflow.parameters.argo-workflow-url }}` }}"
+                - name: workflow-status
+                  # If "Succeeded", mark-deploy-status marks this commit as 'deploy succeeded'. Please customize this logic to suit your app's needs.
+                  value: "{{ `{{ workflow.status }}` }}"
+                - name: status-description-success
+                  value: "deploy succeeded"
+                - name: status-description-failure
+                  value: "deploy failed"
+          - name: process-notification-workflow
+            templateRef:
+              name: ethos-process-notification-workflow-template
+              template: process-notification-workflow-template
+            when: "{{ `{{ workflow.status }}` }} != Succeeded"
+            arguments:
+              parameters:
+                - name: git-commit-id
+                  value: "{{ `{{workflow.parameters.git-commit-id}}` }}"
+                - name: service-git-org
+                  value: "{{ `{{ workflow.parameters.service-git-org }}` }}"
+                - name: service-git-repo
+                  value: "{{ `{{ workflow.parameters.service-git-repo }}` }}"
+                - name: service-git-repo-url
+                  value: "{{ `{{ workflow.parameters.service-git-repo-url }}` }}"
+                - name: deploy-git-org
+                  value: "{{ `{{ workflow.parameters.deploy-git-org }}` }}"
+                - name: deploy-git-repo
+                  value: "{{ `{{ workflow.parameters.deploy-git-repo }}` }}"
+                - name: failure-message
+                  value: "{{ `{{ workflow.failures }}` }}"
+                - name: failure-source
+                  value: "ARGO_WORKFLOW"
+                - name: workflow-name
+                  value: "{{ `{{ workflow.name }}` }}"
+                - name: workflow-namespace
+                  value: "{{ `{{ workflow.namespace }}` }}"
+                - name: is-prod
+                  value: "{{- eq ( .Values.global.hubClusterType ) "prod" }}"
+                - name: notification-types
+                  value: "{{ template "ethos-argo-workflows-resources.getNotificationTypes" (list . "argoWorkflow") }}"
+
+    - name: build-deploy
+      inputs:
+        parameters:
+          - name: container-registry
+            value: "{{ `{{ workflow.parameters.container-registry }}` }}"
+          - name: container-registry-type
+            value: "{{ `{{ workflow.parameters.container-registry-type }}` }}"
+          - name: git-commit-id
+            value: "{{ `{{ workflow.parameters.git-commit-id }}` }}"
+          - name: service-git-org
+            value: "{{ `{{ workflow.parameters.service-git-org }}` }}"
+          - name: service-git-repo
+            value: "{{ `{{ workflow.parameters.service-git-repo }}` }}"
+          - name: service-git-repo-url
+            value: "{{ `{{ workflow.parameters.service-git-repo-url }}` }}"
+          - name: deploy-git-org
+            value: "{{ `{{ workflow.parameters.deploy-git-org }}` }}"
+          - name: deploy-git-repo
+            value: "{{ `{{ workflow.parameters.deploy-git-repo }}` }}"
+          - name: user-ldap
+            value: "{{ `{{ workflow.parameters.user-ldap }}` }}"
+          - name: registry-image-path
+            value: "{{ `{{ workflow.parameters.registry-image-path }}` }}"
+          - name: dockerfile-workingdir-path
+            value: "{{ `{{ workflow.parameters.dockerfile-workingdir-path }}` }}"
+          - name: image-push-secret-ref
+            value: "{{ `{{ workflow.parameters.image-push-secret-ref }}` }}"
+          - name: pre-approved-cmr
+            value: "{{ `{{ workflow.parameters.pre-approved-cmr}}` }}"
+          - name: codebuild-timeout-in-minutes
+            value: {{ .Values.codeBuildTimeoutInMinutes | default "60" }}
+          - name: image-architectures
+            value: {{ if .Values.global.containerImageArchitectures }} '{{ toJson .Values.global.containerImageArchitectures }}' {{ else }} '["amd64"]' {{ end }}
+          - name: image-arch-length
+            value: "{{ `{{inputs.parameters.image-arch-length}}` }}"
+          - name: imagepush-multiarch
+            value: "{{ `{{inputs.parameters.imagepush-multiarch}}` }}"
+      dag:
+        tasks:
+        - name: pre-deploy-validation
+          templateRef:
+            name: ethos-validate-git-commit-template # Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/validate-git-commit-template.yaml
+            template: validate-git-commit
+          arguments:
+            parameters:
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+              - name: service-git-branch-name
+                value: {{ .Values.serviceMainGitBranchName | default "main" }}
+              - name: image-architectures
+                value: "{{`{{inputs.parameters.image-architectures}}`}}"
+{{- if (.Values.global.defaultBuildStepCodebuild) }}
+        - name: build-scan-push
+          dependencies: [pre-deploy-validation]
+          templateRef:
+            name: ethos-codebuild-scan-template
+            template: codebuild-scan
+          arguments:
+            parameters:
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: registry-image-path
+                value: "{{`{{inputs.parameters.registry-image-path}}`}}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+              - name: codebuild-timeout-in-minutes
+                value: "{{`{{inputs.parameters.codebuild-timeout-in-minutes}}`}}"
+              - name: image-architectures
+                value: "{{`{{inputs.parameters.image-architectures}}`}}"
+              - name: arch
+                value: "{{`{{item}}`}}"
+              - name: imagepush-multiarch
+                value: "{{`{{inputs.parameters.imagepush-multiarch}}`}}"
+          withParam: "{{ `{{inputs.parameters.image-architectures}}` }}"       
+{{- else }}
+        - name: build-scan-push
+          dependencies: [pre-deploy-validation]
+          templateRef:
+            name: ethos-build-scan-push-template # Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/build-scan-push-template.yaml
+            template: build-scan-push
+          arguments:
+            parameters:
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: registry-image-path
+                value: "{{`{{inputs.parameters.registry-image-path}}`}}"
+              - name: dockerfile-workingdir-path
+                value: "{{`{{inputs.parameters.dockerfile-workingdir-path}}`}}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+              - name: image-architectures
+                value: "{{`{{inputs.parameters.image-architectures}}`}}"
+              - name: arch
+                value: "{{`{{item}}`}}"
+              - name: imagepush-multiarch
+                value: "{{`{{inputs.parameters.imagepush-multiarch}}`}}"
+          withParam: "{{ `{{inputs.parameters.image-architectures}}` }}"
+{{- end }}
+        - name: image-create-multiarch
+          dependencies: [build-scan-push]
+          templateRef:
+            name: ethos-utility-templates # Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/task/utility-templates/utility-templates.yaml
+            template: image-create-multiarch
+          arguments:
+            parameters:
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: registry-image-path
+                value: "{{`{{inputs.parameters.registry-image-path}}`}}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: git-repo-revision
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: image-architectures
+                value: "{{ `{{inputs.parameters.image-architectures}}` }}"
+              - name: image-arch-length
+                value: "{{ `{{inputs.parameters.image-arch-length}}` }}"
+              - name: image-dest
+                value: "{{ `{{ inputs.parameters.container-registry }}` }}/{{ `{{ inputs.parameters.registry-image-path }}` }}:{{ `{{ inputs.parameters.git-commit-id }}` }}"
+          when: "{{ `{{inputs.parameters.image-arch-length}}` }} == 2" 
+
+        - name: deploy-all
+          dependencies:
+{{- if and (.Values.global.containerImageArchitectures) (gt (len .Values.global.containerImageArchitectures) 1 ) }}
+            - image-create-multiarch
+{{- else }}
+            - build-scan-push
+{{- end }}
+          templateRef:
+            name: deploy-all-template # Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-client-templates/blob/master/argo/templates/deploy-all-template.yaml
+            template: deploy-all
+          arguments:
+            parameters:
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: pre-approved-cmr
+                value: "{{`{{inputs.parameters.pre-approved-cmr}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: service-git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"

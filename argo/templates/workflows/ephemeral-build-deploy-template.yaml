@@ -1,0 +1,218 @@
+{{- if ((.Values.global.ephemeral).enabled) }}
+
+# Workflow templates define the structure of how workflows needs to trigger multiple steps within a DAG.
+# This workflow templates defines steps and dependencies for ephemeral/short lived envs build and deploy steps. in general.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ephemeral-build-deploy-template
+spec:
+  entrypoint: ephemeral-start
+  synchronization:
+    mutex:
+      name: workflow # scope of this mutex is restricted to current namespace.
+  templates:
+    - name: ephemeral-start
+      inputs:
+        parameters:
+          - name: pull-request-body-action
+          - name: pull-request-number
+          - name: git-commit-id
+          - name: git-repo-url
+          - name: service-git-org
+          - name: service-git-repo
+          - name: deploy-git-org
+          - name: deploy-git-repo
+          - name: container-registry
+          - name: container-registry-type
+          - name: dockerfile-workingdir-path
+          - name: image-push-secret-ref
+          - name: registry-image-path
+          - name: ephemeral-cluster
+          - name: ephemeral-cluster-type
+          - name: service-environment
+          - name: read-rbac-group
+          - name: write-rbac-group
+          - name: user-ldap
+          - name: codebuild-timeout-in-minutes
+            value: {{ .Values.codeBuildTimeoutInMinutes | default "60" }}
+
+      dag:
+        tasks:
+        - name: ephemeral-upsert
+          templateRef:
+            name: ethos-ephemeral-upsert
+            template: ephemeral-upsert
+          arguments:
+            parameters:
+              - name: git-deploy-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: git-deploy-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: git-service-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: git-service-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: pull-request-number
+                value: "{{`{{inputs.parameters.pull-request-number}}`}}"
+              - name: pull-request-body-action
+                value: "{{`{{inputs.parameters.pull-request-body-action}}`}}"
+              - name: ephemeral-cluster
+                value: "{{`{{inputs.parameters.ephemeral-cluster}}`}}"
+              - name: ephemeral-cluster-type
+                value: "{{`{{inputs.parameters.ephemeral-cluster-type}}`}}"
+              - name: service-environment
+                value: "{{`{{inputs.parameters.service-environment}}`}}"
+              - name: read-rbac-group
+                value: "{{`{{inputs.parameters.read-rbac-group}}`}}"
+              - name: write-rbac-group
+                value: "{{`{{inputs.parameters.write-rbac-group}}`}}"
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: ephemeral-environment-values-file-path
+                value: "{{ .Values.global.ephemeral.values_file_path | default "" }}"
+
+{{- if (.Values.global.defaultBuildStepCodebuild) }}
+        - name: build-scan-push
+          dependencies: [ephemeral-upsert]
+          when: "{{`{{inputs.parameters.pull-request-body-action}}`}} != closed"
+          templateRef:
+            name: ethos-codebuild-scan-template
+            template: codebuild-scan
+          arguments:
+            parameters:
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.git-repo-url}}`}}"
+              - name: registry-image-path
+                value: "{{`{{inputs.parameters.registry-image-path}}`}}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+              - name: codebuild-timeout-in-minutes
+                value: "{{`{{inputs.parameters.codebuild-timeout-in-minutes}}`}}"
+{{- else }}
+        - name: build-scan-push
+          dependencies: [ephemeral-upsert]
+          when: "{{`{{inputs.parameters.pull-request-body-action}}`}} != closed"
+          templateRef:
+            name: ethos-build-scan-push-template # Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/build-scan-push-template.yaml
+            template: build-scan-push
+          arguments:
+            parameters:
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.git-repo-url}}`}}"
+              - name: registry-image-path
+                value: "{{`{{inputs.parameters.registry-image-path}}`}}"
+              - name: dockerfile-workingdir-path
+                value: "{{`{{inputs.parameters.dockerfile-workingdir-path}}`}}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+{{- end }}
+        - name: "promote-to-env-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+          dependencies: [build-scan-push]
+          when: "{{`{{inputs.parameters.pull-request-body-action}}`}} != closed"
+          templateRef:
+            name: ethos-promote-to-env-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/promote-to-env-templates.yaml
+            template: update-image-tag
+          arguments:
+            parameters:
+              - name: environment
+                value: "Dev"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: region
+                value: ""
+              - name: chart-path
+                value: "k8s/helm/ephemeral-envs/{{`{{inputs.parameters.service-git-repo}}`}}-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+        - name: "argocd-sync-and-wait-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+          dependencies: ["promote-to-env-pr-{{`{{inputs.parameters.pull-request-number}}`}}"]
+          when: "{{`{{inputs.parameters.pull-request-body-action}}`}} != closed"
+          templateRef:
+            name: ethos-wait-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/wait-templates.yaml
+            template: argocd-sync-and-wait
+          arguments:
+            parameters:
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: cluster
+                value: "{{.Values.global.ephemeral.cluster}}"
+              - name: chart-path
+                value: "k8s/helm/ephemeral-envs/{{`{{inputs.parameters.service-git-repo}}`}}-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+
+{{- if $.Values.vaultSecrets.slack }}
+        - name: slack-notification-env
+          dependencies: ["argocd-sync-and-wait-pr-{{`{{inputs.parameters.pull-request-number}}`}}"]
+          when: "{{`{{inputs.parameters.pull-request-body-action}}`}} != closed"
+          templateRef:
+            name: ethos-slack-notification-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/slack-notification-templates.yaml
+            template: slack-notify
+          arguments:
+            parameters:
+              - name: slack-message
+                value: "Workflow completed for git repo: {{`{{inputs.parameters.service-git-repo}}`}}-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+              - name: environment
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}-pr-{{`{{inputs.parameters.pull-request-number}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.git-repo-url}}`}}"
+              - name: region
+                value: "All"
+{{- end }}
+
+    - name: finalize-ci
+      steps:
+      - - name: finalize-ci
+          # Posts success/failure result to commit status. From: https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/dag/primary-workflow-ci-pipeline/primary-workflow-ci-pipeline.yaml
+          templateRef:
+            name: ethos-primary-workflow-ci-pipeline
+            template: finalize-ci
+          arguments:
+            parameters:
+              - name: git-org
+                value: "{{ `{{ workflow.parameters.service-git-org }}` }}"
+              - name: git-repo
+                value: "{{ `{{ workflow.parameters.service-git-repo }}` }}"
+              - name: git-commit-id
+                value: "{{`{{ workflow.parameters.git-commit-id}}`}}"
+              - name: git-repo-url
+                value: "{{`{{ workflow.parameters.git-repo-url}}`}}"
+              - name: argo-workflow-url
+                value: "{{ `{{ workflow.parameters.argo-workflow-url }}` }}/workflows/{{ `{{ workflow.namespace }}` }}/{{ `{{ workflow.name }}` }}"
+              - name: workflow-status
+                value: "{{ `{{ workflow.status }}` }}"
+              - name: status-context
+                value: "ephemeral-env-workflow"
+              - name: status-description-success
+                value: "PR-{{`{{ workflow.parameters.pull-request-number}}`}} deployment {{ `{{ workflow.status }}` }}"
+              - name: status-description-failure
+                value: "PR-{{`{{ workflow.parameters.pull-request-number}}`}} deployment {{ `{{ workflow.status }}` }}"
+
+{{- end }}

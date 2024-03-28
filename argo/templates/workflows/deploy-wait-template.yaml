@@ -1,0 +1,86 @@
+# Workflow templates define the structure of how workflows needs to trigger multiple steps within a DAG.
+# This workflow templates defines steps and dependencies for multi environment and multi region scenario.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: deploy-wait-template
+spec:
+  entrypoint: deploy-wait
+  templates:
+    - name: deploy-wait
+      inputs:
+        parameters:
+          - name: git-commit-id
+          - name: service-git-org
+          - name: service-git-repo
+          - name: service-git-repo-url
+          - name: deploy-git-org
+          - name: deploy-git-repo
+          - name: user-ldap
+          - name: environment
+          - name: region
+          - name: cluster
+          - name: chart-path
+          - name: sync-timeout-seconds
+          - name: yaml-replacement-spec
+      dag:
+        tasks:
+
+{{- $promoteEnvTask := printf "promote-to-env-{{inputs.parameters.environment}}-{{inputs.parameters.region}}" }}
+        - name: "{{ $promoteEnvTask }}"
+          templateRef:
+            name: ethos-promote-to-env-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/promote-to-env-templates.yaml
+            template: update-env
+          continueOn:
+            failed: true
+            error: true
+          arguments:
+            parameters:
+              - name: environment
+                value: "{{`{{inputs.parameters.environment}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+              - name: region
+                value: "{{`{{inputs.parameters.region}}`}}"
+              - name: chart-path
+                value: "{{`{{inputs.parameters.chart-path}}`}}"
+              - name: yaml-replacement-spec
+                value: "{{`{{inputs.parameters.yaml-replacement-spec}}`}}"
+
+{{- $syncWaitTask := printf "argocd-sync-and-wait-{{inputs.parameters.environment}}-{{inputs.parameters.region}}" }}
+        - name: "{{ $syncWaitTask}}"
+          dependencies: ["{{ $promoteEnvTask }}"]
+          when: "{{ printf "{{ tasks.%s.status }} == Succeeded" $promoteEnvTask }}"
+          templateRef:
+            name: ethos-wait-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/wait-templates.yaml
+            template: argocd-sync-and-wait
+          arguments:
+            parameters:
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: cluster
+                value: "{{`{{inputs.parameters.cluster}}`}}"
+              - name: chart-path
+                value: "{{`{{inputs.parameters.chart-path}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: timeout_seconds
+                value: "{{`{{ inputs.parameters.sync-timeout-seconds }}`}}"

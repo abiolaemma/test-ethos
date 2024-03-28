@@ -1,0 +1,327 @@
+# Configuration used by this chart and dependencies
+
+ethos-vault-secrets-operator:
+  evo:
+    podAnnotations:
+      argocd.argoproj.io/sync-wave: "-1"
+    serviceAccount:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"
+    fullnameOverride: evo
+    image:
+      repository: 461989703686.dkr.ecr.us-east-1.amazonaws.com/ethos/66131456-5bcb-11e9-8647-d663bd873d93/ricoberger/vault-secrets-operator
+      tag: 1.17.0
+      pullPolicy: IfNotPresent
+    vault:
+      authMethod: approle
+      # Mount path for the approle being used for authentication
+      # If you are using your own approle, the mount path should be auth/approle
+      # If you are using an approle created by provisioner, the mount path should be auth/approle_ethos
+      appRolePath: auth/approle_ethos
+      # -- List of namespaces to watch
+      namespaces: ""
+
+    environmentVars:
+    - name: VAULT_ROLE_ID
+      valueFrom:
+        secretKeyRef:
+          name: vault-secrets-operator
+          key: role-id
+    - name: VAULT_SECRET_ID
+      valueFrom:
+        secretKeyRef:
+          name: vault-secrets-operator
+          key: secret-id
+    - name: VAULT_TOKEN_RENEWAL_RETRY_INTERVAL
+      value: "30"
+    - name: VAULT_TOKEN_MAX_TTL
+      value: "43200"
+
+global:
+  # Service git org
+  serviceGitOrg: "CESSS-EDR"
+
+  # Service git repo
+  serviceGitRepo: "SSP-ethos-dev"
+
+  # Deploy git org
+  deployGitOrg: "CESSS-EDR"
+
+  # Deploy git repo
+  deployGitRepo: "SSP-ethos-dev-deploy"
+
+  # Configuration for the ethos-argo-workflow-resources dependency.
+  # Additional configurations and options may be available, see repository for most up-to-date information:
+  # https://git.corp.adobe.com/adobe-platform/ethos-argo-workflows-resources/blob/main/ethos-argo-workflows-resources/values.yaml
+
+  # Argo Artifact Push/Pull Secret
+  # Mandatory
+  artifactStorage:
+    # Name of a secret containing credentials to read/write Argo workflow artifacts to
+    # an Artifactory generic repo or s3 bucket.
+    # See https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates#requirements
+    # for the expected format of the secret.
+    # Default value: "argo-artifacts-creds"
+    artifactPushPullSecret: "argo-artifacts-creds"
+    # Must choose from either genericArtifactory or s3 below and specify
+    # corresponding artifactory/s3 credentials under `artifactStorage` in
+    # argo-build-secrets/values.yaml
+    # genericArtifactory is mandatory if s3 is not configured
+    genericArtifactory:
+      # Generic Artifactory repository for Argo workflow artifacts
+      # Use aws artifactory hosted by IT team
+      # If your generic artifactory repo name is: generic-asr-release
+      # Then use repo URL as: https://artifactory-uw2.adobeitc.com/artifactory/generic-asr-release
+      argoArtifactRepoURL: "https://artifactory-uw2.adobeitc.com/artifactory/generic-edr-ssp-release"
+    # s3 is mandatory if genericArtifactory is not configured
+    # s3:
+      # # AWS s3 bucket name for Argo workflow artifacts in client's AWS account
+      # bucket: "ethos-argo-artifacts-dev"
+
+  # The cluster type in which the workflow templates are deployed.
+  # Allowed values: "stage" or "prod"
+  # Default value: "prod"
+  # Note: "stage" is for Ethos internal use only.
+  hubClusterType: "prod"
+
+  # set to true to use aws codebuild for building docker images.
+  defaultBuildStepCodebuild: true
+
+  ## Architectures to build the docker image for using Kaniko ( Codebuild support for native build will be announces soon). Use this option with defaultBuildStepCodebuild set to false. Uncomment below lines to use Kaniko multi-arch build.
+  # containerImageArchitectures:
+  #  - "amd64"
+  #  - "arm64"
+
+  # Optional
+  # Specify a custom buildspec to override the default, please see example below
+  # customBuildSpec: |
+  #   version: 0.2
+  #   phases:
+  #     pre_build:
+  #       commands:
+  #         - echo "[CODEBUILD] pre_build started at $(date)"
+  #         - GIT_SERVER_URL="https://${GIT_USER}:${GIT_TOKEN}@$(echo ${GIT_REPO_URL} | cut -d "/" -f 3,4,5)"
+  #         - git clone ${GIT_SERVER_URL} && cd $(echo ${GIT_SERVER_URL} |  cut -d "/" -f 5 | cut -d "." -f 1) && git checkout ${GIT_COMMIT_ID} && pwd
+  #         - echo "[CODEBUILD] pre_build finished at $(date)"
+  #     build:
+  #       commands:
+  #         - echo "[CODEBUILD] build started at $(date)"
+  #         - echo Building the Docker image...
+  #         - make IMAGE_TAG=${IMAGE_TAG} build
+  #         - echo "[CODEBUILD] build finished at $(date)"
+  #     post_build:
+  #       commands:
+  #         - echo "[CODEBUILD] post_build started at $(date)"
+  #         - echo "Pushing the Docker image..."
+  #         - echo "${CONTAINER_REGISTRY_TOKEN}" | docker login --username "${CONTAINER_REGISTRY_USERNAME}" --password-stdin "${CONTAINER_REGISTRY}"
+  #         - docker push $IMAGE_TAG
+  #         - echo "[CODEBUILD] post_build completed at $(date)"
+
+  # LDAP group names associated with LDAP groups that will be
+  # granted admin/readonly access to your Argo Workflows UI resources
+  # e.g. 'GRP-ETHOS-STAGE-SVC-FOUNDATION-ADMINS' LDAP group
+  #
+  # Note: The LDAP group names are case sensitive.
+  #
+  # The title displayed on the LDAP group page may have different
+  # case sensitivity so please ensure the LDAP group name(s) below
+  # matches exactly with the LDAP name(s) displayed on the group page
+  # in the IAM portal.
+  #
+  # e.g. Navigate to https://iam.corp.adobe.com/#/groupMember and then
+  # click on the desired group to view the group page and the group title.
+  #
+  workflowsUiSsoAccessLdapGroupNames:
+    # A list of names of LDAP groups that will be granted admin access to your
+    # Argo workflow resources in the workflows UI
+    # e.g. 'GRP-ETHOS-STAGE-SVC-FOUNDATION-ADMINS' LDAP group
+    admin:
+      - "GRP-CES-EDR-K8S"
+    # A list of names of LDAP groups that will be granted read only access to your
+    # Argo workflow resources in the workflows UI
+    # e.g. 'GRP-ETHOS-STAGE-SVC-FOUNDATION-READONLY' LDAP group
+    readonly:
+      - "GRP-CES-EDR-K8S"
+
+  # Properties of your ephemeral or short-lived pr environments
+  # ephemeral:
+  # # This enables ephemeral or short-lived pr environments features
+  # # A sensor & an associated workflow is created upon enabling this flag (global.ephemeral.enabled)
+  #   enabled: true
+  #   # Cluster where your short-lived environments will be deployed
+  #   cluster: "my-ephemeral-cluster"
+  #   # Cluster type of your short-lived environments
+  #   cluster_type: "my-ephemeral-cluster-type"
+  #   # Service Environment type of your short-lived environments. Allowed values: CI, Dev, DEV, QE, QA, Stage, STG, Production, PROD, Experimental, Fix    , PreProd, PreStage
+  #   service_environment: "Experimental"
+  #   # RBAC groups that will read or write access to your short-lived environments' workflows
+  #   rbac_groups:
+  #     read: "my-read-rbac-grp"
+  #     write: "my-write-rbac-grp"
+  #   # Optional
+  #   # path relative to the repository directory
+  #   # Used as values.yaml for all ephemeral environments. The file will be copied for each ephemeral environment to `*-deploy/k8s/helm/ephemeral-envs/<ephemeral-env-name>/values.yaml`
+  #   # example: `argo/configs/ephemeral-values.yaml`
+  #   values_file_path: "argo/configs/ephemeral-values.yaml"
+
+  # Optional
+  # Notification configurations
+  # Below configurations are for configuring notifications
+  # Supported types at this time: slack
+  notifications:
+    argoWorkflow:
+      - type: "slack"
+
+# Service git repo main branch name
+# The branch in your service's git repository that reflects the state and changes
+# to your service that need to be deployed. Usually the default branch in service's
+# git repo.
+# Default value: main
+serviceMainGitBranchName: "main"
+
+# Container registry name
+# Use aws artifactory hosted by IT team
+# If your artifactory registry name is: docker-asr-release
+# Then use dockerRegistry as: docker-asr-release.dr-uw2.adobeitc.com
+containerRegistry: docker-edr-ssp-release.dr-uw2.adobeitc.com
+
+# Dockerfile Working Directory
+# Path to the directory containing the Dockerfile and build context.
+# Path should be relative to the root of the github repository.
+# example: some_dir/dir_containing_my_dockerfile
+# Default value: .  (the root of the repository)
+dockerfileWorkingdirPath: "."
+
+codeBuildTimeoutInMinutes: "60"
+
+# Image Push Secret
+# Name of a secret containing credentials to push the image to the container registry.
+# See https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates#requirements
+# for the expected format of the secret.
+# Default value: "image-push-creds"
+imagePushSecret: "image-push-creds"
+
+# Whether or not to trigger a CI pipeline workflow on a Github pull request event.
+enableCIPipeline: true
+
+# Whether or not to trigger a rollback (commit reverts) for all environments altered by the Workflow
+# if ArgoCD fails to sync an environment-region.
+enableRollbacks: false
+
+vaultSecrets:
+  # corpArtifactory contains username and token used for pulling BBC docker images from
+  # adobe corp artifactory repositories
+  # required keys: username, token
+  corpArtifactory: ats_cesss_edr/artifactory_corp
+
+  # cloudArtifactory contains username and token used for pushing docker images to client's
+  # adobe cloud artifactory repositories
+  # required keys: username, token
+  cloudArtifactory: ats_cesss_edr/artifactory_cloud
+
+  # git contains username, email and token used for cloning application git repo in client hub namespace
+  # required keys: username, email, token
+  github: ats_cesss_edr/github_credentials
+
+  # Must choose only one of either Artifactory or s3 below and
+  # specify corresponding artifactory repo/s3 bucket details under
+  # `artifactStorage` at argo/values.yaml
+  # Mandatory
+  artifactStorage:
+    # genericArtifactory contains artifactory username and token used for pushing artifacts to
+    # a generic artifactory repository all provided by the client
+    # Mandatory if s3 is not configured
+    # required keys: username, token
+    genericArtifactory: ats_cesss_edr/artifactory_cloud
+
+    # s3 contains IAM user access key and secret key used for pushing artifacts to s3 bucket
+    # Mandatory if genericArtifactory is not configured
+    # required keys: aws_access_key_id, aws_secret_access_key
+    # s3: vault/path/to/generic/s3/secrets/must/be/replaced
+
+  # slack contains webhook url that will be used to send notifications
+  # required keys: webhook-url
+  # If removing this secret, please make sure there are no slack types in the notifications config
+  slack: ats_cesss_edr/slack
+
+  # Optional
+  # Used to trigger jenkins job through remote access API's.
+  # required keys: api_token, user
+  # jenkins: vault/path/to/slack/jenkins/secret/must/be/replaced
+
+  # Optional, required if skms.enabled is true
+  # required keys: username, passkey
+  # skmsApiUser: vault/path/to/skms/user/secret/must/be/replaced
+
+# Optional
+# SKMS configuration
+# skms:
+#   # Optional. Default false. Enable or disable SKMS in the deploy workflow
+#   enabled: false
+#   # Optional. Required if skms.enabled is true.
+#   # Skms change model ID to use. Must be a pre-approved change model,
+#   # and the credentials specified in the vaultSecrets.skmsApiUser path
+#   # must belong to a pre-approved submitter for the change model.
+#   changeModelID: "<SKMS_CHANGE_MODEL_ID>"
+#   # how long the skms maintenance window should be set for, in minutes. Default: 120
+#   duration: 120
+#   # Optional. Default false. Enable or disable pre-approved CMR workflows.
+#   # If enabled, deploy workflows will not trigger automatically. Manual trigger will be required.
+#   enablePreApprovedCMR: false
+
+# List of environments to include in the workflow pipeline.
+# Environments are by default deployed sequentially, and regions within environments
+# are deployed in parallel. You can change this behaviour by modifying the Helm templates.
+# Mandatory
+environments:
+  # Your service environment
+  # Supported value: dev
+  # Mandatory
+  - name: "Dev"
+    # Insert a manual resume step (gate) to prevent automatic advancement to next environment
+    # If this is true, the suspend step will not appear and workflow will proceed
+    # as normal, but if it is false then suspend step will appear in which case the user will have to
+    # resume the workflow manually.
+
+
+    # Optional. Insert an SKMS request before or after this environment.
+    # skms:
+    #   # If true, this will insert an SKMS pre-flight task before this environment
+    #   insertPreFlight: true
+    #   # If true, this will insert an SKMS post-flight task after this environment
+    #   insertPostFlight: true
+
+    # List of one or more regions where the application should be deployed.
+    # Mandatory
+    regions:
+      # Your service region
+      # Ex: va6
+      # Mandatory
+      - name: "va6"
+        # Name of the destination cluster
+        # Ex: ethos101-dev-va6
+        # Mandatory
+        destClusterName: "ethos102-stage-va6"
+        # Chart path for the Argo CD Application
+        # Ex: k8s/helm/Dev/va6
+        # Mandatory
+        chartPath: "k8s/helm/Dev/va6"
+        # Time to wait for the application in this region to sync and come up healthy, in seconds
+        # Optional, Default: 3600
+        # syncTimeoutSeconds: 3600
+        # Mandatory
+        # List of deployments where image has to be updated
+        deploymentPaths:
+          # Mandatory
+          # Name of the helm chart
+          # Pass an empty string in case you are not using a helm chart dependency
+        - name: cont1-deployment-templates
+          # Mandatory
+          # List of containers for which the image has to be updated
+          containers:
+          - name: cont1
+
+
+
+
+

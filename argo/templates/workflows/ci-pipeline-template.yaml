@@ -1,0 +1,135 @@
+# Workflow templates define the structure of how workflows needs to trigger multiple steps within a DAG.
+# This workflow template defines the ci pipeline workflow.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ci-pipeline-template
+spec:
+  entrypoint: ci-pipeline
+  onExit: finalize-ci
+  templates:
+    - name: ci-pipeline
+      inputs:
+        parameters:
+          - name: git-org
+            value: ""
+          - name: git-repo
+            value: ""
+          - name: git-commit-id
+            value: ""
+          - name: git-repo-url
+            value: ""
+          - name: user-ldap
+            value: ""
+          - name: comments-url
+            value: ""
+          - name: argo-workflow-url
+            value: ""
+          - name: pull-request-url
+            value: ""
+          - name: pull-request-body
+            value: ""
+          - name: container-registry
+            value: "{{ .Values.containerRegistry }}"
+          - name: container-registry-type
+            value: "docker"
+          - name: registry-image-path
+            value: "{{ lower .Values.global.serviceGitOrg }}/{{ lower .Values.global.serviceGitRepo }}/{{ lower .Values.global.serviceGitRepo }}-img"
+          - name: image-push-secret-ref
+            value: {{ .Values.imagePushSecret | default "image-push-creds" }}
+          - name: image-architectures
+            value: {{ if .Values.global.containerImageArchitectures }} '{{ toJson .Values.global.containerImageArchitectures }}' {{ else }} '["amd64"]' {{ end }}
+      dag:
+        tasks:
+        - name: init-ci
+          # Verifies user has repository permissions and generates commit status. From: https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/dag/primary-workflow-ci-pipeline/primary-workflow-ci-pipeline.yaml.
+          templateRef:
+            name: ethos-primary-workflow-ci-pipeline
+            template: init-ci
+          arguments:
+            parameters:
+              - name: git-repo
+                value: "{{`{{inputs.parameters.git-repo}}`}}"
+              - name: git-org
+                value: "{{`{{inputs.parameters.git-org}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.git-repo-url}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: comments-url
+                value: "{{`{{inputs.parameters.comments-url}}`}}"
+              - name: argo-workflow-url
+                value: "{{`{{inputs.parameters.argo-workflow-url}}`}}"
+              - name: pull-request-url
+                value: "{{`{{inputs.parameters.pull-request-url}}`}}"
+              - name: pull-request-body
+                value: "{{`{{inputs.parameters.pull-request-body}}`}}"
+
+{{- if (.Values.global.defaultBuildStepCodebuild) }}
+        # This step by default clones and builds your application repository.
+        - name: ci-tests
+          dependencies:
+            - init-ci
+          templateRef:
+            name: ethos-build-templates
+            template: git-clone-codebuild
+          arguments:
+            parameters:
+              - name: git-repo-url
+                value: "{{ `{{  workflow.outputs.parameters.clone-url }}` }}"
+              - name: git-repo-revision
+                value: "{{ `{{  workflow.outputs.parameters.git-sha }}` }}"
+              - name: container-registry
+                value: "{{`{{inputs.parameters.container-registry}}`}}"
+              - name: container-registry-type
+                value: "{{`{{inputs.parameters.container-registry-type}}`}}"
+              - name: user-ldap
+                value: "{{`{{inputs.parameters.user-ldap}}`}}"
+              - name: image-dest
+                value: "{{ `{{ inputs.parameters.container-registry }}` }}/{{ `{{ inputs.parameters.registry-image-path }}` }}:{{ `{{ workflow.outputs.parameters.git-sha }}` }}"
+              - name: image-push-secret-ref
+                value: "{{`{{inputs.parameters.image-push-secret-ref}}`}}"
+              - name: codebuild-timeout-in-minutes
+                value: {{ .Values.codeBuildTimeoutInMinutes | default "60" }}
+{{- else }}
+        - name: ci-tests
+          dependencies:
+            - init-ci
+          templateRef:
+            name: ethos-build-templates
+            template: git-clone-docker-build
+          arguments:
+            parameters:
+              - name: git-repo-url
+                value: "{{ `{{  workflow.outputs.parameters.clone-url }}` }}"
+              - name: git-repo-path
+                value: /src
+              - name: git-repo-revision
+                value: "{{ `{{  workflow.outputs.parameters.git-sha }}` }}"
+              - name: arch
+                value: "{{`{{item}}`}}"
+          withParam: "{{ `{{inputs.parameters.image-architectures}}` }}" 
+              
+{{- end }}
+
+    - name: finalize-ci
+      steps:
+      - - name: finalize-ci
+          # Posts success/failure result to commit status. From: https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/dag/primary-workflow-ci-pipeline/primary-workflow-ci-pipeline.yaml
+          templateRef:
+            name: ethos-primary-workflow-ci-pipeline
+            template: finalize-ci
+          arguments:
+            parameters:
+              - name: git-org
+                value: "{{ `{{ workflow.parameters.git-org }}` }}"
+              - name: git-repo
+                value: "{{ `{{ workflow.parameters.git-repo }}` }}"
+              - name: git-commit-id
+                value: "{{ `{{ workflow.outputs.parameters.git-sha }}` }}"
+              - name: argo-workflow-url
+                value: "{{ `{{ workflow.parameters.argo-workflow-url }}` }}"
+              - name: workflow-status
+                value: "{{ `{{ workflow.status }}` }}"

@@ -1,0 +1,133 @@
+# Sensor defines a set of event dependencies (inputs) and triggers (outputs).
+# Refer for more details: https://argoproj.github.io/argo-events/concepts/sensor/
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: sensor-build
+spec:
+  template:
+    serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+  dependencies:
+    - name: payload
+      eventSourceName: {{ template "ethos-argo-workflows-resources.eventSourceName" . }}
+      eventName: {{ template "ethos-argo-workflows-resources.appChangeEventName" . }}
+      filters: # for more filter options please see https://argoproj.github.io/argo-events/tutorials/07-filters/
+        data:
+          - path: body.ref
+            type: string
+            value:
+              - refs/heads/{{ .Values.serviceMainGitBranchName | default "main" }} # to filter on multiple values or other options, please see https://argoproj.github.io/argo-events/tutorials/07-filters/#data-filter
+
+        # If enablePreApprovedCMR is turned on, use a fake field to filter out all payloads.
+        # No deploy workflows should be kicked off automatically.
+        {{- if and (.Values.skms).enabled (.Values.skms).enablePreApprovedCMR }}
+          - path: body.doesntExist
+            type: string
+            value:
+              - "notreal"
+        {{- end }}
+
+    - name: provisioner-payload
+      eventSourceName: provisioner-webhook
+      eventName: {{ template "ethos-argo-workflows-resources.appChangeEventName" . }}
+      filters: # for more filter options please see https://argoproj.github.io/argo-events/tutorials/07-filters/
+        data:
+          - path: body.ref
+            type: string
+            value:
+              - refs/heads/{{ .Values.serviceMainGitBranchName | default "main" }} # to filter on multiple values or other options, please see https://argoproj.github.io/argo-events/tutorials/07-filters/#data-filter
+
+        # If enablePreApprovedCMR is turned on, use a fake field to filter out all payloads.
+        # No deploy workflows should be kicked off automatically.
+        {{- if and (.Values.skms).enabled (.Values.skms).enablePreApprovedCMR }}
+          - path: body.doesntExist
+            type: string
+            value:
+              - "notreal"
+        {{- end }}
+
+  triggers:
+    - template:
+        name: trigger
+        conditions: payload
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source: &trigger_source
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: build-workflow-
+                labels:
+                  appName: dockerapp
+              spec:
+                serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+                arguments:
+                  parameters:
+                    - name: container-registry
+                      value: "{{ .Values.containerRegistry }}"
+                    - name: container-registry-type
+                      value: "docker"
+                    - name: git-commit-id
+                      value: ""
+                    - name: service-git-org
+                      value: "{{ .Values.global.serviceGitOrg }}"
+                    - name: service-git-repo
+                      value: "{{ .Values.global.serviceGitRepo }}"
+                    - name: service-git-repo-url
+                      value: ""
+                    - name: deploy-git-org
+                      value: "{{ .Values.global.deployGitOrg }}"
+                    - name: deploy-git-repo
+                      value: "{{ .Values.global.deployGitRepo }}"
+                    - name: user-ldap
+                      value: ""
+                    - name: registry-image-path
+                      value: "{{ lower .Values.global.serviceGitOrg }}/{{ lower .Values.global.serviceGitRepo }}/{{ lower .Values.global.serviceGitRepo }}-img"
+                    - name: dockerfile-workingdir-path
+                      value: {{ .Values.dockerfileWorkingdirPath | default "." }}
+                    - name: image-push-secret-ref
+                      value: {{ .Values.imagePushSecret | default "image-push-creds" }}
+                    - name: enable-rollbacks
+                      value: {{ .Values.enableRollbacks }}
+                workflowTemplateRef:
+                  name: build-deploy-template
+          parameters:
+            - src:
+                dependencyName: payload
+                dataKey: body.head_commit.id
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: payload
+                dataKey: body.repository.clone_url
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: payload
+                dataKey: body.head_commit.author.username
+              dest: spec.arguments.parameters.8.value
+
+    - template:
+        name: provisioner-trigger
+        conditions: provisioner-payload
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source: *trigger_source
+          parameters:
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.head_commit.id
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.repository.clone_url
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.head_commit.author.username
+              dest: spec.arguments.parameters.8.value

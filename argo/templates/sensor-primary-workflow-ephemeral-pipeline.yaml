@@ -1,0 +1,130 @@
+{{- if ((.Values.global.ephemeral).enabled) }}
+
+# Sensor defines a set of event dependencies (inputs) and triggers (outputs).
+# Refer for more details: https://argoproj.github.io/argo-events/concepts/sensor/
+
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: sensor-ephemeral
+spec:
+  template:
+    serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+  dependencies:
+    - name: provisioner-payload
+      eventSourceName: provisioner-webhook
+      eventName: {{ template "ethos-argo-workflows-resources.appChangeEventName" . }}
+      filters:
+        data:
+          # Note: Uppercase G lowercase h were required in "Github" in order to filter (this differs from Github documentation of payload headers).
+          # Note2: Usage of header vs headers is inconsistent and appears to be based on the type of eventSource used.
+          # Use the LogTrigger to help determine the correct path.
+          # https://github.com/argoproj/argo-events/blob/master/api/sensor.md#logtrigger, https://github.com/argoproj/argo-events/blob/master/examples/sensors/log-debug.yaml
+          # See the actions payload here: https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#pull_request
+          - path: header.X-Github-Event
+            type: string
+            value:
+              - pull_request
+          - path: body.action
+            type: string
+            value:
+              - opened
+              - edited
+              - reopened
+              - synchronize
+              - closed
+          - path: body.pull_request.state
+            type: string
+            value:
+              - open
+              - closed
+          - path: body.pull_request.base.ref
+            type: string
+            value:
+              - {{ .Values.serviceMainGitBranchName | default "main" }}
+
+  triggers:
+    - template:
+        name: ephemeral-pipeline-trigger
+        conditions: provisioner-payload
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: ephemeral-workflow-
+                labels:
+                  appName: dockerapp
+              spec:
+                serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+                arguments:
+                  parameters:
+                    - name: pull-request-body-action
+                      value: ""
+                    - name: pull-request-number
+                      value: ""
+                    - name: git-commit-id
+                      value: ""
+                    - name: git-repo-url
+                      value: ""
+                    - name: user-ldap
+                      value: ""
+                    - name: service-git-org
+                      value: "{{ .Values.global.serviceGitOrg }}"
+                    - name: service-git-repo
+                      value: "{{ .Values.global.serviceGitRepo }}"
+                    - name: deploy-git-org
+                      value: "{{ .Values.global.deployGitOrg }}"
+                    - name: deploy-git-repo
+                      value: "{{ .Values.global.deployGitRepo }}"
+                    - name: argo-workflow-url
+                      value: {{ template "ethos-argo-workflows-resources.getArgoWorkflowUrl" . }}
+                    - name: container-registry
+                      value: "{{ .Values.containerRegistry }}"
+                    - name: container-registry-type
+                      value: "docker"
+                    - name: dockerfile-workingdir-path
+                      value: {{ .Values.dockerfileWorkingdirPath | default "." }}
+                    - name: image-push-secret-ref
+                      value: {{ .Values.imagePushSecret | default "image-push-creds" }}
+                    - name: registry-image-path
+                      value: "{{ lower .Values.global.serviceGitOrg }}/{{ lower .Values.global.serviceGitRepo }}/{{ lower .Values.global.serviceGitRepo }}-img"
+                    - name: ephemeral-cluster
+                      value: {{ .Values.global.ephemeral.cluster }}
+                    - name: ephemeral-cluster-type
+                      value: {{ .Values.global.ephemeral.cluster_type }}
+                    - name: service-environment
+                      value: {{ .Values.global.ephemeral.service_environment }}
+                    - name: read-rbac-group
+                      value: {{ .Values.global.ephemeral.rbac_groups.read }}
+                    - name: write-rbac-group
+                      value: {{ .Values.global.ephemeral.rbac_groups.write }}
+                workflowTemplateRef:
+                  name: ephemeral-build-deploy-template
+          parameters:
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.action
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request.number
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request.head.sha
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request.head.repo.clone_url
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.sender.login
+              dest: spec.arguments.parameters.4.value
+{{- end }}

@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "required": [
+    "global",
+    "containerRegistry",
+    "environments",
+    "vaultSecrets"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "required": [
+        "serviceGitOrg",
+        "serviceGitRepo",
+        "deployGitOrg",
+        "deployGitRepo"
+      ],
+      "properties": {
+        "serviceGitOrg": {
+          "type": "string"
+        },
+        "serviceGitRepo": {
+          "type": "string"
+        },
+        "deployGitOrg": {
+          "type": "string"
+        },
+        "deployGitRepo": {
+          "type": "string"
+        },
+        "ephemeral":{
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "cluster": {
+              "type": "string"
+            },
+            "cluster_type": {
+              "type": "string"
+            },
+            "service_environment": {
+              "type": "string",
+              "pattern": "(CI|Dev|DEV|QE|QA|Stage|STG|Production|PROD|Experimental|Fix|PreProd|PreStage)[0-9]*"
+            },
+            "rbac_groups": {
+              "type": "object",
+              "properties": {
+                "read_rbac_group": {
+                  "type": "string"
+                },
+                "write_rbac_group": {
+                  "type": "string"
+                }
+              }
+            },
+            "values_file_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        },
+        "notifications": {
+          "type": "object",
+          "properties": {
+            "argoWorkflow": {
+              "type": "array",
+              "items": {
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "provisioner": {
+              "type": "array",
+              "items": {
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "argoCD": {
+              "type": "array",
+              "items": {
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "argoRollouts": {
+              "type": "array",
+              "items": {
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "serviceMainGitBranchName": {
+      "type": "string"
+    },
+    "containerRegistry": {
+      "type": "string"
+    },
+    "dockerfileWorkingdirPath": {
+      "type": "string"
+    },
+    "imagePushSecret": {
+      "type": "string"
+    },
+    "enableCIPipeline": {
+      "type": "boolean",
+      "enum": [
+        true,
+        false
+      ]
+    },
+    "enableRollbacks": {
+      "type": "boolean",
+      "enum": [
+        true,
+        false
+      ]
+    },
+    "vaultSecrets": {
+      "type": "object",
+      "required": [
+        "github"
+      ],
+      "properties": {
+        "corpArtifactory": {
+          "type": "string"
+        },
+        "cloudArtifactory": {
+          "type": "string"
+        },
+        "github": {
+          "type": "string"
+        },
+        "artifactStorage": {
+          "type": "object",
+          "oneOf": [
+            {
+              "required": [
+                "s3"
+              ],
+              "type": "object",
+              "properties": {
+                "s3": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "required": [
+                "genericArtifactory"
+              ],
+              "type": "object",
+              "properties": {
+                "genericArtifactory": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "slack": {
+          "type": "string"
+        },
+        "skmsApiUser": {
+          "type": "string"
+        }
+      }
+    },
+    "skms": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "changeModelID": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "integer"
+        },
+        "enablePreApprovedCMR": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "enabled": {
+              "const": true
+            }
+          },
+          "required": [
+            "changeModelID"
+          ]
+        },
+        {
+          "properties": {
+            "enabled": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "environments": {
+      "type": "array",
+      "items": {
+        "required": [
+          "name",
+          "regions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "required": [
+                "name",
+                "destClusterName",
+                "chartPath",
+                "deploymentPaths"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "destClusterName": {
+                  "type": "string"
+                },
+                "chartPath": {
+                  "type": "string"
+                },
+                "syncTimeoutSeconds": {
+                  "type": "integer"
+                },
+                "deploymentPaths":{
+                  "type": "array",
+                  "items": {
+                    "required": [
+                      "name",
+                      "containers"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "containers": {
+                        "type": "array",
+                        "items": {
+                          "required": [
+                            "name"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "skms": {
+            "type": "object",
+            "properties": {
+              "insertPreFlight": {
+                "type": "boolean"
+              },
+              "insertPostFlight": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

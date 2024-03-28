@@ -1,0 +1,176 @@
+{{- if .Values.enableCIPipeline }}
+
+# Sensor defines a set of event dependencies (inputs) and triggers (outputs).
+# Refer for more details: https://argoproj.github.io/argo-events/concepts/sensor/
+
+# This is required to be a separate sensor from the docker-build sensor as we want
+# to use the same eventsource and name.
+# See https://argoproj.github.io/argo-events/sensors/more-about-sensors-and-triggers/#duplicate-dependencies
+
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: sensor-ci
+spec:
+  template:
+    serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+  dependencies:
+    - name: payload
+      eventSourceName: {{ template "ethos-argo-workflows-resources.eventSourceName" . }}
+      eventName: {{ template "ethos-argo-workflows-resources.appChangeEventName" . }}
+
+      # Filter out only the payload we care about right now: pull_request events for open PRs against the main branch
+      # Based on: https://github.com/argoproj/argo-events/blob/master/examples/sensors/github.yaml
+      # Documentation regarding the github pull_request event object: https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#pull_request
+      filters:
+        data:
+          # Note: Uppercase G lowercase h were required in "Github" in order to filter (this differs from Github documentation of payload headers).
+          # Note2: Usage of header vs headers is inconsistent and appears to be based on the type of eventSource used.
+          # Use the LogTrigger to help determine the correct path.
+          # https://github.com/argoproj/argo-events/blob/master/api/sensor.md#logtrigger, https://github.com/argoproj/argo-events/blob/master/examples/sensors/log-debug.yaml
+          - path: headers.X-Github-Event
+            type: string
+            value:
+              - pull_request
+          - path: body.action
+            type: string
+            value:
+              - opened
+              - reopened
+              - synchronize
+          - path: body.pull_request.state
+            type: string
+            value:
+              - open
+          - path: body.pull_request.base.ref
+            type: string
+            value:
+              - {{ .Values.serviceMainGitBranchName | default "main" }}
+
+    - name: provisioner-payload
+      eventSourceName: provisioner-webhook
+      eventName: {{ template "ethos-argo-workflows-resources.appChangeEventName" . }}
+      # "//" operator docs: https://stedolan.github.io/jq/manual/#Alternativeoperator://
+      transform:
+        jq: ".body.transformed += { comments_url: ( .body.pull_request.comments_url // .body.issue.comments_url ), pull_request_url: .body.issue.pull_request.url }"
+      filters:
+        exprLogicalOperator: "or"
+        exprs:
+          - expr: event_type == "pull_request" && action IN ("opened", "reopened", "synchronize") && state == "open" && branch == "{{ .Values.serviceMainGitBranchName | default "main" }}"
+            fields:
+              - name: event_type
+                path: header.X-Github-Event.0
+              - name: action
+                path: body.action
+              - name: state
+                path: body.pull_request.state
+              - name: branch
+                path: body.pull_request.base.ref
+          - expr: event_type == "issue_comment" && comment IN ("/retest", "retest")
+            fields:
+              - name: event_type
+                path: header.X-Github-Event.0
+              - name: comment
+                path: body.comment.body
+
+  triggers:
+    - template:
+        name: ci-pipeline-trigger
+        conditions: payload
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source: &trigger_source
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: ci-workflow-
+                labels:
+                  appName: dockerapp
+              spec:
+                serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+                arguments:
+                  parameters:
+                    - name: git-org
+                      value: "{{ .Values.global.serviceGitOrg }}"
+                    - name: git-repo
+                      value: "{{ .Values.global.serviceGitRepo }}"
+                    - name: git-commit-id
+                      value: ""
+                    - name: git-repo-url
+                    - name: user-ldap
+                      value: ""
+                    - name: comments-url
+                      value: ""
+                    - name: argo-workflow-url
+                      value: {{ template "ethos-argo-workflows-resources.getArgoWorkflowUrl" . }}
+                    - name: pull-request-url
+                      value: ""
+                    - name: pull-request-body
+                      value: ""
+                workflowTemplateRef:
+                  name: ci-pipeline-template
+          parameters:
+            - src:
+                dependencyName: payload
+                dataKey: body.pull_request.head.sha
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: payload
+                dataKey: body.pull_request.head.repo.clone_url
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: payload
+                dataKey: body.sender.login
+              dest: spec.arguments.parameters.4.value
+            - src:
+                dependencyName: payload
+                dataKey: body.pull_request.comments_url
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: payload
+                dataKey: body.pull_request
+                value: ""
+              dest: spec.arguments.parameters.8.value
+
+    - template:
+        name: provisioner-ci-pipeline-trigger
+        conditions: provisioner-payload
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source: *trigger_source
+          parameters:
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request.head.sha
+                value: ""
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request.head.repo.clone_url
+                value: ""
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.sender.login
+              dest: spec.arguments.parameters.4.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.transformed.comments_url
+              dest: spec.arguments.parameters.5.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.transformed.pull_request_url
+              dest: spec.arguments.parameters.7.value
+            - src:
+                dependencyName: provisioner-payload
+                dataKey: body.pull_request
+                value: ""
+              dest: spec.arguments.parameters.8.value
+{{- end }}

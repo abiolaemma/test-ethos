@@ -1,0 +1,18 @@
+apiVersion: v2
+
+description: A Helm chart for Argo
+
+name: ethos-argo-client-templates
+
+version: "0.0.1"
+
+dependencies:
+  - name: ethos-workflowtemplates
+    version: "^1.0.0"
+    repository: https://artifactory-uw2.adobeitc.com/artifactory/helm-ethos-workflowtemplates-release
+  - name: ethos-argo-workflows-resources
+    version: "^4.0.0"
+    repository: https://artifactory-uw2.adobeitc.com/artifactory/helm-ethos-argo-workflows-resources-release
+  - name: ethos-vault-secrets-operator
+    repository: https://artifactory-uw2.adobeitc.com/artifactory/helm-kubernetes-release
+    version: "1.24.1"

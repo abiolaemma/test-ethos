@@ -1,0 +1,225 @@
+# Workflow templates define the structure of how workflows needs to trigger multiple steps within a DAG.
+# This workflow templates defines steps and dependencies for build and deploy steps in general.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: deploy-all-template
+spec:
+  serviceAccountName: {{ template "ethos-argo-workflows-resources.serviceAccountName" . }}
+  entrypoint: deploy-all
+  synchronization:
+    mutex:
+      name: deploy-workflow # scope of this mutex is restricted to current namespace.
+  templates:
+    - name: deploy-all
+      inputs:
+        parameters:
+          - name: git-commit-id
+          - name: service-git-org
+          - name: service-git-repo
+          - name: service-git-repo-url
+          - name: deploy-git-org
+          - name: deploy-git-repo
+          - name: pre-approved-cmr
+          - name: user-ldap
+
+      dag:
+        tasks:
+{{- $data := dict }}
+{{- $dependOnPrevEnv := "" }}
+{{- $skmsEnabled := (.Values.skms).enabled }}
+{{- $underChangeMgt := false }}  # this will track whether we've seen a preflight already, but no postflight yet
+{{- $skmsPreTaskName := "" }}
+
+{{- if .Values.environments }}
+{{- $firstEnv := true }}
+{{- /*
+Loop over the environments:
+*/}}
+{{- range $environments := .Values.environments }}
+{{- $_ := set $data "envName" .name }}
+{{- $_ := set $data "skms" .skms }}
+{{- $addSuspendStep := false }}
+# Verifying for the presence of autoPromote key in values.yaml file and checking its value
+{{- if or (.autoPromote) (eq (.autoPromote | toString) "<nil>") }}
+{{- $addSuspendStep = false }}
+{{- else }}
+{{- $addSuspendStep = true }}
+{{- end }}
+# Adding a suspend step if autoPromote is disabled
+{{- $suspendTaskName := "" }}
+{{- if $addSuspendStep }}
+
+{{- $suspendTaskName = printf "suspend-%s" $data.envName }}
+
+        - name: "{{ $suspendTaskName }}"
+          dependencies: [{{ $dependOnPrevEnv }}]
+          templateRef:
+            name: ethos-wait-templates
+            template: suspend-workflow
+
+{{- end }}
+
+# If SKMS is enabled and this environment has skms.insertPreFlight=true, add preflight task
+{{- if and $skmsEnabled (($data.skms).insertPreFlight) }}
+{{- $underChangeMgt = true }}
+{{- $skmsPreTaskName = printf "SKMS-preflight-%s" $data.envName }}
+
+        - name: "{{ $skmsPreTaskName }}"
+{{- if $addSuspendStep }}
+          dependencies:
+            - "{{ $suspendTaskName }}"
+{{- else if not $firstEnv }}
+          dependencies: [{{ $dependOnPrevEnv }}]
+{{- end }}
+          templateRef:
+            name: ethos-skms-templates
+            template: skms-preflight
+          arguments:
+            parameters:
+              - name: change-model
+                value: "{{ $.Values.skms.changeModelID }}"
+              - name: pre-approved-cmr
+                value: "{{`{{inputs.parameters.pre-approved-cmr}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+              - name: duration
+                value: "{{ default 120 $.Values.skms.duration }}"
+{{- end }}
+
+# Insert the deploy-environment task
+{{- $taskName := printf "deploy-env-%s" $data.envName }}
+
+        - name: {{ $taskName }}
+{{- if and $skmsEnabled (($data.skms).insertPreFlight) }}
+          dependencies:
+            - "{{ $skmsPreTaskName }}"
+{{- else if $addSuspendStep }}
+          dependencies:
+            - "{{ $suspendTaskName }}"
+{{- else if not $firstEnv }}
+          dependencies: [{{ $dependOnPrevEnv }}]
+{{- end }}
+          templateRef:
+            name: "deploy-env-template-{{ $data.envName | lower }}"
+            template: deploy-env
+{{- if $underChangeMgt }}
+          continueOn:
+            failed: true
+            error: true
+
+# If underChangeMgt, but not the first env, we need to check status of previous env
+{{- if not (($data.skms).insertPreFlight) }}
+          when: "{{ printf "{{ tasks.%s.status }} == Succeeded" $dependOnPrevEnv }}"
+{{- end }}
+{{- end }}
+          arguments:
+            parameters:
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: service-git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+
+{{- if $.Values.vaultSecrets.slack }}
+        - name: "slack-notification-{{ $data.envName }}"
+          dependencies: [{{ $taskName }}]
+          when: "{{ printf "{{ tasks.%s.status }} == Succeeded" $taskName }}"
+          templateRef:
+            name: ethos-slack-notification-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/slack-notification-templates.yaml
+            template: slack-notify
+          arguments:
+            parameters:
+              - name: environment
+                value: "{{ $data.envName }}"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: region
+                value: ""
+{{- end }}
+
+# If SKMS is enabled and this environment has skms.insertPostFlight=true, add postflight task
+{{- if and $underChangeMgt (and $skmsEnabled (($data.skms).insertPostFlight)) }}
+        - name: "SKMS-postflight-{{ $data.envName }}"
+          dependencies: [{{ $taskName }}]
+          templateRef:
+            name: ethos-skms-templates
+            template: skms-postflight
+          arguments:
+            parameters:
+              # Note: this will just look at the immediately preceeding task status.
+              # If a previous env failed, the immediate preceeding task here is assumed to be Skipped, and
+              # as such Skipped is considered a failure here.
+              - name: workflow-status
+                value: "{{ printf "{{ tasks.%s.status }}" $taskName }}"
+              - name: cmr-id
+                value: "{{ printf "{{ tasks.%s.outputs.parameters.cmr-id }}" $skmsPreTaskName }}"
+
+        # before leaving underChangeMgt, we need to validate that the deploys actually succeeded.
+        # Note: this will just check that the immediately preceeding task is Succeeded.
+        # If a previous env failed, the immediate preceeding task here is assumed to be Skipped, and
+        # as such Skipped is considered a failure here.
+        - name: "validate-{{ $data.envName }}"
+          dependencies: [{{ $taskName }}]
+          templateRef:
+            name: ethos-utility-templates
+            template: validate-step
+          arguments:
+            parameters:
+              - name: step-status
+                value: "{{ printf "{{ tasks.%s.status }}" $taskName }}"
+
+{{- $dependOnPrevEnv = printf "validate-%s" $data.envName}}
+{{- $underChangeMgt = false }}
+{{- else}}
+{{- $dependOnPrevEnv = $taskName }}
+{{- end }}
+
+{{- $firstEnv = false }}
+{{- end }} {{- /* end of environments range */}}
+{{- end }} {{- /* end of environments if */}}
+
+{{- if $.Values.vaultSecrets.slack }}
+        - name: slack-notification
+          dependencies: [{{ $dependOnPrevEnv }}]
+          templateRef:
+            name: ethos-slack-notification-templates #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-shared-templates/blob/master/charts/ethos-workflowtemplates/templates/slack-notification-templates.yaml
+            template: slack-notify
+          arguments:
+            parameters:
+              - name: slack-message
+                value: "Workflow completed for git repo: {{`{{inputs.parameters.service-git-org}}`}}/{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: environment
+                value: "All"
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: region
+                value: "All"
+{{- end }}

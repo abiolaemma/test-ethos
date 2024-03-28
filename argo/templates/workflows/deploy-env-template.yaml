@@ -1,0 +1,85 @@
+# Defines a helm function render-deploy-env-template that will
+# render a deploy workflow for that env given the regions configured for the env
+# first arg passed in should be the yaml config for the environment from the values file
+
+{{- define "render-deploy-env-template" -}}
+  {{- $envObj := . }}
+  {{- $envName := $envObj.name }}
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: deploy-env-template-{{ $envName | lower }}
+spec:
+  entrypoint: deploy-env
+  templates:
+    - name: deploy-env
+      inputs:
+        parameters:
+          - name: git-commit-id
+          - name: service-git-org
+          - name: service-git-repo
+          - name: service-git-repo-url
+          - name: deploy-git-org
+          - name: deploy-git-repo
+          - name: user-ldap
+      dag:
+        tasks:
+
+{{- $data := dict }}
+{{- if $envObj.regions }}
+{{- /*
+Loop over the regions in the environment:
+*/}}
+{{- range $regions := $envObj.regions }}
+{{- $_ := set $data "regionName" .name }}
+{{- $_ := set $data "clusterName" .destClusterName }}
+{{- $_ := set $data "chartPath" .chartPath}}
+{{- $_ := set $data "deploymentPaths" .deploymentPaths}}
+{{- $_ := set $data "commitId" `{{ inputs.parameters.git-commit-id }}` }}
+
+        - name: {{ printf "deploy-wait-%s-%s" $envName $data.regionName }}
+          templateRef:
+            name: deploy-wait-template #Template reference https://git.corp.adobe.com/adobe-platform/ethos-argo-client-templates/tree/master/argo/templates/workflows/deploy-wait-notify-template.yaml
+            template: deploy-wait
+          arguments:
+            parameters:
+              - name: git-commit-id
+                value: "{{`{{inputs.parameters.git-commit-id}}`}}"
+              - name: service-git-org
+                value: "{{`{{inputs.parameters.service-git-org}}`}}"
+              - name: service-git-repo
+                value: "{{`{{inputs.parameters.service-git-repo}}`}}"
+              - name: service-git-repo-url
+                value: "{{`{{inputs.parameters.service-git-repo-url}}`}}"
+              - name: deploy-git-org
+                value: "{{`{{inputs.parameters.deploy-git-org}}`}}"
+              - name: deploy-git-repo
+                value: "{{`{{inputs.parameters.deploy-git-repo}}`}}"
+              - name: user-ldap
+                value: "{{ `{{ inputs.parameters.user-ldap }}` }}"
+              - name: environment
+                value: "{{ $envName }}"
+              - name: region
+                value: "{{ $data.regionName }}"
+              - name: cluster
+                value: "{{ $data.clusterName }}"
+              - name: chart-path
+                value: "{{ $data.chartPath }}"
+              - name: sync-timeout-seconds
+                value: "{{ .syncTimeoutSeconds | default 3600 }}"
+              - name: yaml-replacement-spec
+                value: | {{ include "helmChart.renderYamlReplacementSpec" $data | nindent 24}}
+
+{{- end }} {{- /* end of regions range */}}
+{{- end }} {{- /* end of regions if */}}
+
+{{- end -}}
+
+# Actually call the function once per environment
+{{- if .Values.environments }}
+{{- range .Values.environments }}
+{{- include "render-deploy-env-template" . }}
+{{- end }}
+{{- end }}
